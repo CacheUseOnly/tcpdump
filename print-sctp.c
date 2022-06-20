@@ -112,9 +112,10 @@
 #define SCTP_ECN_CWR		0x0d
 #define SCTP_SHUTDOWN_COMPLETE	0x0e
 #define SCTP_I_DATA		0x40
+#define SCTP_ASCONF_ACK		0x80
 #define SCTP_RE_CONFIG          0x82
 #define SCTP_FORWARD_CUM_TSN    0xc0
-#define SCTP_RELIABLE_CNTL      0xc1
+#define SCTP_ASCONF		0xc1
 #define SCTP_I_FORWARD_TSN      0Xc2
 
 static const struct tok sctp_chunkid_str[] = {
@@ -134,9 +135,10 @@ static const struct tok sctp_chunkid_str[] = {
 	{ SCTP_ECN_CWR,           "ECN CWR"           },
 	{ SCTP_SHUTDOWN_COMPLETE, "SHUTDOWN COMPLETE" },
 	{ SCTP_I_DATA,            "I-DATA"            },
+	{ SCTP_ASCONF_ACK,        "ASCONF-ACK"        },
 	{ SCTP_RE_CONFIG,         "RE-CONFIG"         },
 	{ SCTP_FORWARD_CUM_TSN,   "FOR CUM TSN"       },
-	{ SCTP_RELIABLE_CNTL,     "REL CTRL"          },
+	{ SCTP_ASCONF,            "ASCONF"            },
 	{ SCTP_I_FORWARD_TSN,     "I-FORWARD-FSN"     },
 	{ 0, NULL }
 };
@@ -160,6 +162,18 @@ static const struct tok sctp_chunkid_str[] = {
 #define RE_CONFIG_RES		16
 #define ADD_OUT_STREAM_REQ	17
 #define ADD_IN_STREAM_REQ	18
+
+/* ASCONF Parameters*/
+/* - used in INIT/ACK chunk */
+#define SET_PRI_ADDR		0XC004
+#define ADAPT_LAYER_INDIC	0XC006
+#define SUPPORTED_EXT		0x8008
+/* - used in ASCONF param */
+#define ADD_IP_ADDR		0xC001
+#define DEL_IP_ADDR		0xC002
+/* - used in ASCONF response */
+#define ERR_CAUSE_INDIC		0xC003
+#define SUCCESS_INDIC		0xC005
 
 #define SCTP_ADDRMAX 60
 
@@ -411,6 +425,33 @@ struct addStreamReq{
   uint16_t reserved;
 };
 
+/* ASCONF parameters */
+struct asconfigParamHdr{
+  nd_uint16_t type;
+  nd_uint16_t length;
+};
+
+struct sctpASCONF{
+  nd_uint32_t seq_num;
+  nd_uint16_t addr_type;
+  uint16_t addr_len;
+};
+
+struct sctpASCONF_ACK{
+  nd_uint32_t seq_num;
+};
+
+struct err_param{
+  uint8_t type;
+  uint8_t flags;
+  nd_uint16_t length;
+};
+
+struct cause{
+  nd_uint16_t cause_code;
+  nd_uint16_t cause_length;
+};
+
 struct sctpUnifiedDatagram{
   struct sctpChunkDesc uh;
   struct sctpDataPart dp;
@@ -446,6 +487,34 @@ static const struct tok results[] = {
 	{ 4,	"Error - Request already in progress"	},
 	{ 5,	"Error - Bad Sequence Number"		},
 	{ 6,	"In progress"				},
+};
+
+/* ASCONF tokens */
+static const struct tok asconfigParams[] = {
+	{ SET_PRI_ADDR,		"SET PRIM ADDR"			},
+	{ ADAPT_LAYER_INDIC,	"Adaptation Layer Indication"	},
+	{ SUPPORTED_EXT,	"Supported Extensions"		},
+	{ ADD_IP_ADDR,		"ADD ADDR"			},
+	{ DEL_IP_ADDR,		"DEL ADDR"			},
+	{ ERR_CAUSE_INDIC,	"ERR"				},
+	{ SUCCESS_INDIC,	"SUCCESS"			},
+};
+
+static const struct tok causeCode[] = {
+	{ 1,    "Invalid Stream Identifier"			},
+        { 2,    "Missing Mandatory Parameter"			},
+        { 3,    "Stale Cookie Error"				},
+        { 4,    "Out of Resource"				},
+        { 5,    "Unresolvable Address"				},
+        { 6,    "Unrecognized Chunk Type"			},
+        { 7,    "Invalid Mandatory Parameter"			},
+        { 8,    "Unrecognized Parameters"			},
+        { 9,    "No User Data"					},
+        { 10,   "Cookie Received While Shutting Down"		},
+        { 11,   "Restart of an Association with New Addresses"	},
+        { 12,   "User Initiated Abort"				},
+        { 13,   "Protocol Violation"				},
+	{ 0,	NULL }
 };
 
 static const struct tok ForCES_channels[] = {
@@ -1099,6 +1168,125 @@ sctp_print(netdissect_options *ndo,
 
 		/* it's a parameter padding if there are more chunks in the remaining length*/
 		if (chunkLengthRemaining > 4) bp += padding_len; 
+	    }
+	    break;
+	  }
+	case SCTP_ASCONF:
+	  {
+	    const struct sctpASCONF *content = (const struct sctpASCONF*) bp;
+	    const struct asconfigParamHdr *header;
+	    uint16_t param_len, addr_type;
+	    const char *ptr;
+
+	    ND_PRINT("[SEQ: %u, ", GET_BE_U_4(content->seq_num));
+
+	    bp += sizeof(*content);
+	    chunkLengthRemaining -= sizeof(*content);
+	    sctpPacketLengthRemaining -= sizeof(*content);
+	    /* Parsing address variable defined in RFC4960 3.3.2.1 */
+	    if (GET_BE_U_2(content->addr_type) == 5) {		/* IPv4 */
+		u_char buffer[5] = {'\0'};
+		memcpy(buffer, (const uint32_t *)bp, 4 * sizeof(char));
+		ND_PRINT("ADDR: %s] ", ipaddr_string(ndo, buffer));
+		bp += 4 * sizeof(char);
+		chunkLengthRemaining -= 4 * sizeof(char);
+		sctpPacketLengthRemaining -= 4 * sizeof(char);
+	    } else if (GET_BE_U_2(content->addr_type) == 6) {	/* IPv6 */
+		u_char buffer[17] = {'\0'};
+		memcpy(buffer, (const uint32_t *)ptr, 16 * sizeof(char));
+		ND_PRINT("ADDR: %s] ", ip6addr_string(ndo, buffer));
+		bp += 16 * sizeof(char);
+		chunkLengthRemaining -= 16 * sizeof(char);
+		sctpPacketLengthRemaining -= 16 * sizeof(char);
+	    }
+
+	    while (0 != chunkLengthRemaining) {
+		header = (const struct asconfigParamHdr*) bp;
+		param_len = GET_BE_U_2(header->length);
+		ptr = (const char *)bp;
+		bp += param_len;
+		chunkLengthRemaining -= param_len;
+		sctpPacketLengthRemaining -= param_len;
+
+		if (ndo->ndo_vflag >= 1) 
+		    ND_PRINT("[%s", tok2str(asconfigParams, NULL, GET_BE_U_2(header->type)));
+		ptr += sizeof(*header);
+
+		if (ndo->ndo_vflag >= 2) {
+		    ND_PRINT(": C-ID: %u, ", GET_BE_U_4(ptr));
+		    ptr += sizeof(uint32_t);
+		    addr_type = GET_BE_U_2(ptr);
+		    ptr += sizeof(uint32_t);
+		    if (addr_type == 5) {	/* IPv4 */
+			u_char buffer[5] = {'\0'};
+			memcpy(buffer, (const uint32_t *)ptr, 4 * sizeof(char));
+			ND_PRINT("ADDR: %s] ", ipaddr_string(ndo, buffer));
+		    } else if (addr_type == 6) {/* IPv6 */
+			u_char buffer[17] = {'\0'};
+			memcpy(buffer, (const uint32_t *)ptr, 16 * sizeof(char));
+			ND_PRINT("ADDR: %s] ", ip6addr_string(ndo, buffer));
+		    }
+		} else {
+		    ND_PRINT("]");
+		}
+	    }    
+	    break;
+	  }
+	case SCTP_ASCONF_ACK:
+	  {
+	    const struct sctpASCONF_ACK *content = (const struct sctpASCONF_ACK*) bp;
+	    const struct asconfigParamHdr *header;
+	    uint16_t param_len;
+	    const char *ptr;
+
+	    ND_PRINT("[SEQ: %u] ", GET_BE_U_4(content->seq_num));
+
+	    bp += sizeof(*content);
+	    chunkLengthRemaining -= sizeof(*content);
+	    sctpPacketLengthRemaining -= sizeof(*content);
+
+	    while (0 != chunkLengthRemaining) {
+		header = (const struct asconfigParamHdr*) bp;
+		param_len = GET_BE_U_2(header->length);
+		ptr = (const char *)bp;
+		bp += param_len;
+		chunkLengthRemaining -= param_len;
+		sctpPacketLengthRemaining -= param_len;
+
+		if (ndo->ndo_vflag >= 1) 
+		    ND_PRINT("[%s", tok2str(asconfigParams, NULL, GET_BE_U_2(header->type)));
+		ptr += sizeof(*header);
+
+		/* print payload only when vflag >= 2 */
+		if (ndo->ndo_vflag < 2) {
+		    ND_PRINT("] ");
+		    continue;
+		}
+
+		switch (GET_BE_U_2(header->type)) {
+		case ERR_CAUSE_INDIC:
+		  {
+		    const struct err_param *errHdr = (const struct err_param*) ptr;
+		    const struct cause *causeHdr;
+		    uint16_t param_remaining = GET_BE_U_2(errHdr->length);
+		    ptr += sizeof(*errHdr);
+
+		    ND_PRINT(": ");
+		    while (0 != param_remaining) {
+			causeHdr = (const struct cause*) ptr;
+			ND_PRINT("%s, ", tok2str(causeCode, NULL, GET_BE_U_2(causeHdr->cause_code)));
+			ptr += GET_BE_U_2(causeHdr->cause_length);
+			param_remaining -= GET_BE_U_2(causeHdr->cause_length);
+		    }
+		    ND_PRINT("] ");
+		    break;
+		  }
+		case SUCCESS_INDIC:
+		  {
+		    ND_PRINT(": C-ID %u] ", GET_BE_U_4(ptr));
+		    break;
+		  }
+		}
 	    }
 	    break;
 	  }
