@@ -114,7 +114,7 @@
 #define SCTP_I_DATA		0x40
 #define SCTP_FORWARD_CUM_TSN    0xc0
 #define SCTP_RELIABLE_CNTL      0xc1
-#define SCTP_RELIABLE_CNTL_ACK  0xc2
+#define SCTP_I_FORWARD_TSN      0Xc2
 
 static const struct tok sctp_chunkid_str[] = {
 	{ SCTP_DATA,              "DATA"              },
@@ -135,7 +135,7 @@ static const struct tok sctp_chunkid_str[] = {
 	{ SCTP_I_DATA,            "I-DATA"            },
 	{ SCTP_FORWARD_CUM_TSN,   "FOR CUM TSN"       },
 	{ SCTP_RELIABLE_CNTL,     "REL CTRL"          },
-	{ SCTP_RELIABLE_CNTL_ACK, "REL CTRL ACK"      },
+	{ SCTP_I_FORWARD_TSN,     "I-FORWARD-FSN"     },
 	{ 0, NULL }
 };
 
@@ -147,6 +147,9 @@ static const struct tok sctp_chunkid_str[] = {
 #define SCTP_DATA_NOT_FRAG	0x03
 #define SCTP_DATA_UNORDERED	0x04
 #define SCTP_I_DATA_IMMEDIATE	0x08	/* I-Data Chunk Specific Flags */
+
+/* I-Forward-TSN Specific Flag*/
+#define SCTP_I_FORWARD_UNORDERED  0x01
 
 #define SCTP_ADDRMAX 60
 
@@ -359,6 +362,16 @@ struct sctpIData{
   nd_uint16_t reserved;
   nd_uint32_t MID;
   nd_uint32_t PPID_FSN;
+};
+
+struct sctpIForward{
+  nd_uint32_t new_cum_TSN;
+};
+
+struct sctpIForwardEntry{
+  nd_uint16_t streamId;
+  uint16_t flag;
+  nd_uint32_t MID;
 };
 
 struct sctpUnifiedDatagram{
@@ -712,6 +725,42 @@ sctp_print(netdissect_options *ndo,
 	    bp += payload_size;
 	    sctpPacketLengthRemaining -= payload_size;
 	    chunkLengthRemaining -= payload_size;
+	    break;
+	  }
+	case SCTP_I_FORWARD_TSN:
+	  {
+	    const struct sctpIForward *dataHdrPtr;
+
+	    ND_ICHECKMSG_ZU("chunk length", chunkLengthRemaining, <, sizeof(*dataHdrPtr));
+	    dataHdrPtr=(const struct sctpIForward*)bp;
+	
+	    ND_PRINT("[TSN: %u] ", GET_BE_U_4(dataHdrPtr->new_cum_TSN));
+
+	    bp += sizeof(*dataHdrPtr);
+	    sctpPacketLengthRemaining -= sizeof(*dataHdrPtr);
+	    chunkLengthRemaining -= sizeof(*dataHdrPtr);
+	    ND_ICHECKMSG_U("chunk length", chunkLengthRemaining, ==, 0)
+
+	    if (ndo->ndo_vflag < 2) {
+		bp += chunkLengthRemaining;
+		sctpPacketLengthRemaining -= chunkLengthRemaining;
+		break;
+	    }
+
+	    while (sizeof(struct sctpIForwardEntry) <= chunkLengthRemaining) {
+		const struct sctpIForwardEntry *entry = (const struct sctpIForwardEntry*)bp;
+		ND_PRINT("[SID: %u] ", GET_BE_U_2(entry->streamId));
+		if ((entry->flag & SCTP_I_FORWARD_UNORDERED) == SCTP_I_FORWARD_UNORDERED) ND_PRINT("(U)");	/* if U bit is set */
+		ND_PRINT("[MID: %u] ", GET_BE_U_2(entry->MID));
+
+		chunkLengthRemaining -= sizeof(struct sctpIForwardEntry);
+		sctpPacketLengthRemaining -= sizeof(struct sctpIForwardEntry);
+		bp += sizeof(struct sctpIForwardEntry);
+	    }
+
+	    ND_ICHECKMSG_U("chunk length", chunkLengthRemaining, >, 0)
+	    bp += chunkLengthRemaining;
+	    sctpPacketLengthRemaining -= chunkLengthRemaining;
 	    break;
 	  }
 	case SCTP_INITIATION :
